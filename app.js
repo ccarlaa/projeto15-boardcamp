@@ -2,6 +2,7 @@ import express from "express"
 import cors from "cors"
 import dotenv from "dotenv"
 import joi from "joi"
+import DateExtension from '@joi/date';
 
 import connection from "./db.js"
 
@@ -62,7 +63,7 @@ app.post('/categories', async (req, res) => {
 
 app.get('/games', async (req, res) => {
 	const name = req.query.name
-	if(name != undefined){
+	if(name !== undefined){
 		try {
 			await connection.query(`
 				SELECT 
@@ -81,7 +82,7 @@ app.get('/games', async (req, res) => {
 					games 
 				WHERE 
 					upper(name) LIKE upper($1);
-		`, [(`%${name}%`)])
+			`, [(`${name}%`)])
 			res.status(200).send(filteredGames.rows)
 		} catch (err) {
 			res.sendStatus(500)
@@ -159,6 +160,138 @@ app.post('/games', async (req, res) => {
 		res.sendStatus(500)
 	}
 })
+
+app.get('/customers', async (req, res) => {
+	const cpf = req.query.cpf
+	if(cpf !== undefined){
+		try {
+			const filterCPF = await connection.query(`
+				SELECT 
+					* 
+				FROM 
+					customers 
+				WHERE 
+					upper(cpf) LIKE upper($1);
+			`, [(`${cpf}%`)])
+			res.status(200).send(filterCPF.rows)
+		} catch (err) {
+			res.sendStatus(500)
+		}
+	} else {
+		try {
+			const customers = await connection.query(`
+				SELECT 
+					* 
+				FROM 
+					customers
+			`)
+			res.status(200).send(customers.rows)
+		} catch (err) {
+			res.sendStatus(500)
+		}
+	}
+})
+
+app.get('/customers/:id', async (req, res) => {
+	const id = req.params.id
+	try {
+		const categoryById = await connection.query(`
+			SELECT 
+				* 
+			FROM 
+				customers
+			WHERE
+				id = ($1)
+		`, [id])
+		res.status(200).send(categoryById.rows)
+	} catch (err) {
+		res.sendStatus(500)
+	}
+})
+
+const Joi = joi.extend(DateExtension)
+
+app.post('/customers', async (req, res) => {
+	const { name, phone, cpf, birthday } = req.body
+	const customerSchema = joi.object({
+		name: joi.string()
+			.required(),
+		phone: joi.string()
+			.pattern(/^[0-9]{10,11}$/)
+			.required(),
+		cpf: joi.string()
+			.pattern(/^[0-9]{11}$/)
+			.required(),
+		birthday: Joi.date()
+			.format('DD-MM-YYYY')
+			.required(),
+	})
+	const validation = customerSchema.validate({name, phone, cpf, birthday})
+	if(validation.error){
+		res.sendStatus(400)
+        return;
+    }
+	try {
+		const cpfValidation = await connection.query(`
+			SELECT 
+				* 
+			FROM 
+				customers 
+			WHERE 
+				cpf = ($1) 
+		`, [cpf])
+		if (cpfValidation.rowCount !== 0) {
+			return res.sendStatus(409)
+		}
+		await connection.query(`
+			INSERT INTO
+				customers (name, phone, cpf, birthday)
+			VALUES 
+				($1, $2, $3, $4)
+		`, [name, phone, cpf, birthday])
+		res.status(201).send('Entrada salva')
+	} catch(err) {
+		res.sendStatus(500)
+	}
+})
+
+app.put('/customers/:id', async (req, res) => {
+	const id = req.params.id
+	const { name, phone, cpf, birthday } = req.body
+	const customerSchema = joi.object({
+		name: joi.string()
+			.required()
+			.required(),
+		phone: joi.string()
+			.pattern(/^[0-9]{10,11}$/)
+			.required(),
+		cpf: joi.string()
+			.pattern(/^[0-9]{11}$/)
+			.required(),
+		birthday: Joi.date()
+			.format('DD-MM-YYYY')
+			.required(),
+	})
+	const validation = customerSchema.validate({name, phone, cpf, birthday})
+	if(validation.error){
+		res.sendStatus(400)
+        return;
+    }
+	try {
+		await connection.query(`
+			UPDATE
+				customers
+			SET 
+				name = ($1), phone =  ($2), cpf = ($3), birthday = ($4)
+			WHERE
+				id = ($5)
+		`, [name, phone, cpf, birthday, id])
+		res.status(201).send('Entrada salva')
+	} catch(err) {
+		res.sendStatus(500)
+	}
+})
+
 
 const port = process.env.PORT
 app.listen(port, () => {
