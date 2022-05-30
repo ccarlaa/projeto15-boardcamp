@@ -3,6 +3,7 @@ import cors from "cors"
 import dotenv from "dotenv"
 import joi from "joi"
 import DateExtension from '@joi/date';
+import dayjs from "dayjs";
 
 import connection from "./db.js"
 
@@ -11,6 +12,8 @@ app.use(express.json())
 app.use(cors())
 
 dotenv.config()
+
+
 
 app.get('/categories', async (req, res) => {
 	try {
@@ -171,7 +174,9 @@ app.get('/customers', async (req, res) => {
 				FROM 
 					customers 
 				WHERE 
-					upper(cpf) LIKE upper($1);
+					upper(cpf)
+				LIKE 
+					upper($1);
 			`, [(`${cpf}%`)])
 			res.status(200).send(filterCPF.rows)
 		} catch (err) {
@@ -260,7 +265,6 @@ app.put('/customers/:id', async (req, res) => {
 	const { name, phone, cpf, birthday } = req.body
 	const customerSchema = joi.object({
 		name: joi.string()
-			.required()
 			.required(),
 		phone: joi.string()
 			.pattern(/^[0-9]{10,11}$/)
@@ -292,6 +296,178 @@ app.put('/customers/:id', async (req, res) => {
 	}
 })
 
+app.get('/rentals', async (req, res) => {
+	try {
+		const rentals = await connection.query(` 
+			SELECT 
+				rentals.*, games.name as "gameName", customers.name as "customerName", categories.name as "categoryName", categories.id as "categoryId"
+			FROM 
+				rentals
+			JOIN
+				customers
+			ON
+				customers."id" = rentals."customerId"
+			JOIN 
+				games 
+			ON 
+				games."id" = rentals."gameId"
+			JOIN 
+				categories 
+			ON 
+				categories."id" = games."categoryId"
+		`)
+		const rentalsRows = rentals.rows
+		const rentalsBody = []
+		for (let rental of rentalsRows){
+			rental = {
+				...rental,
+				customer: {
+					id: rental.customerId,
+					name: rental.customerName,
+				},
+				game: {
+					id: rental.gameId,
+					name: rental.gameName,
+					categoryId: rental.categoryId,
+					categoryName: rental.categoryName
+				}
+			}
+			rentalsBody.push(rental)
+		}
+	res.send(rentalsBody);
+	} catch(err) {
+		res.sendStatus(500)
+	}
+})
+
+app.post('/rentals', async (req, res) => {
+	const { customerId, gameId, daysRented } = req.body
+	const rentalSchema = joi.object({
+		daysRented: joi.number()
+			.min(1)
+			.required()
+	})
+	const validation = rentalSchema.validate({daysRented})
+	if(validation.error){
+		res.sendStatus(400)
+        return;
+    }
+	try {
+		const customerValidation = await connection.query(`
+			SELECT 
+				* 
+			FROM 
+				customers 
+			WHERE 
+				id = ($1) 
+		`, [customerId])
+		if (customerValidation.rowCount == 0) {
+			return res.sendStatus(400)
+		}
+		const gameValidation = await connection.query(`
+			SELECT 
+				* 
+			FROM 
+				games 
+			WHERE 
+				id = ($1) 
+		`, [gameId])
+		if (gameValidation.rowCount == 0) {
+			return res.sendStatus(400)
+		}
+		const gameRows = gameValidation.rows
+		const stock = gameRows.stockTotal
+		const unavailable = await connection.query(`
+			SELECT 
+				* 
+			FROM 
+				rentals 
+			WHERE 
+				"gameId" = ($1) 
+		`, [gameId])
+		const unavailableRows = unavailable.rows
+		const unavailableNumber = unavailableRows.length 
+		if( unavailableNumber === stock){
+			return res.sendStatus(400)
+		}
+		const rentDate = dayjs().format("DD-MM-YYYY")
+		const originalPrice = (daysRented*gameRows[0].pricePerDay)
+		await connection.query(`
+			INSERT INTO 
+				rentals ("customerId", "gameId", "rentDate", "daysRented", "originalPrice")
+			VALUES 
+				($1, $2, $3, $4, $5) 
+		`, [customerId, gameId, `'${rentDate}'`, daysRented, `${originalPrice}`]) 
+		res.status(201).send('Entrada salva')
+	} catch(err) {
+		res.sendStatus(err)
+	}
+})
+
+app.post('/rentals/:id/return', async (req, res) => {
+	const { id } = req.params
+	const returnDate = dayjs().format("YYYY-MM-DD HH:mm")
+    try {
+		const idValidation = await connection.query(`
+			SELECT 
+				* 
+			FROM 
+				rentals 
+			WHERE 
+				id = ($1)
+		`, [id]);
+
+        if (idValidation.rowCount == 0) {
+			return res.sendStatus(404)
+		}
+        if (idValidation.rows[0].returnDate !== null) {
+			res.sendStatus(400)
+		}
+        const rental = await connection.query(`
+            SELECT 
+                rentals.*, games."pricePerDay" AS "pricePerDay" 
+            FROM
+                rentals
+            JOIN 
+                games ON games."id" = rentals."gameId"
+            WHERE
+                rentals."id" = ($1)
+        `, [id])
+		const rentalRows = rental.rows
+        const delayDays = dayjs().diff(rentalRows[0].rentDate, "days" )
+		const delayFee = null;
+		if(delayDays > 0) {
+			delayFee =parseInt(delayDays) * rentalRows[0].pricePerDay
+		}
+        await connection.query(`
+            UPDATE
+                rentals
+            SET
+                "returnDate" = ($1), "delayFee" = ($2)
+            WHERE 
+                id = ($3)
+        `, [returnDate, delayFee, id])
+		res.status(201).send('Entrada salva')
+	} catch (err) {
+		res.sendStatus(500)
+	}
+})
+
+app.delete('/rentals/:id', async (req, res) => {
+	const { id } = req.params;
+    try {
+        await connection.query(`
+            DELETE FROM 
+				rentals
+            WHERE 
+				id = ($1)
+        `, [id]);
+        res.sendStatus(200);
+    } catch (error) {
+        console.log(error);
+        res.sendStatus(500);
+    }
+})
 
 const port = process.env.PORT
 app.listen(port, () => {
