@@ -1,11 +1,19 @@
 import pg from "pg"
 
 const { Pool } = pg
-const connection = new Pool({
+const db = {
 	connectionString: process.env.DATABASE_URL,
   	user: "postgres",
-	password: "102545",
+	password: PASSWORD,
 	database: "boardcamp"
-})
+}
+
+if(process.env.MODE === "PROD"){
+	db.ssl = {
+		rejectUnauthorized: false
+	}
+}
+
+const connection = new Pool(db)
 
 export default connection
